@@ -194,6 +194,38 @@ impl EroFSCore {
         Ok((offset, read_size))
     }
 
+    /// Byte offset of the inode's inline xattr area (right after the inode).
+    pub(crate) fn xattr_ibody_offset(&self, inode: &Inode) -> usize {
+        self.get_inode_offset(inode.id()) as usize + inode.size()
+    }
+
+    /// Byte offset of a shared xattr entry.
+    pub(crate) fn shared_xattr_offset(&self, id: u32) -> Result<usize> {
+        if self.super_block.feature_compat & crate::xattr::FEATURE_COMPAT_SHARED_EA_IN_METABOX != 0
+        {
+            return Err(Error::NotSupported("shared xattrs in metabox".to_string()));
+        }
+        Ok(self.block_offset(self.super_block.xattr_blk_addr) as usize + id as usize * 4)
+    }
+
+    /// Byte offset of the long xattr prefix table, or `None` if the image has
+    /// no long prefixes.
+    pub(crate) fn long_prefix_table_offset(&self) -> Result<Option<usize>> {
+        let sb = &self.super_block;
+        if sb.xattr_prefix_count == 0 {
+            return Ok(None);
+        }
+        let plain = sb.feature_compat & crate::xattr::FEATURE_COMPAT_PLAIN_XATTR_PFX != 0;
+        if !plain && sb.packed_nid != 0 {
+            // erofs-utils/kernel read the table from the packed inode's data
+            // in this case; not implemented yet.
+            return Err(Error::NotSupported(
+                "long xattr prefixes stored in the packed inode".to_string(),
+            ));
+        }
+        Ok(Some((sb.xattr_prefix_start as usize) << 2))
+    }
+
     pub(crate) fn get_inode_offset(&self, nid: u64) -> u64 {
         self.block_offset(self.super_block.meta_blk_addr) + (nid * InodeCompact::size() as u64)
     }
@@ -242,7 +274,12 @@ mod tests {
         }
     }
 
-    fn make_compact_inode(layout: Layout, data_size: u32, xattr_count: u16, inode_data: u32) -> Inode {
+    fn make_compact_inode(
+        layout: Layout,
+        data_size: u32,
+        xattr_count: u16,
+        inode_data: u32,
+    ) -> Inode {
         let format = (layout as u16) << 1;
         let inode = InodeCompact {
             format,
@@ -269,7 +306,10 @@ mod tests {
         assert_eq!(inode.xattr_size(), size_of::<XattrHeader>());
 
         let inode = make_compact_inode(Layout::FlatInline, 0, 2, 0);
-        assert_eq!(inode.xattr_size(), size_of::<XattrHeader>() + size_of::<XattrEntry>());
+        assert_eq!(
+            inode.xattr_size(),
+            size_of::<XattrHeader>() + size_of::<XattrEntry>()
+        );
     }
 
     #[test]

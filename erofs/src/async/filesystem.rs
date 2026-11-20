@@ -11,6 +11,7 @@ use crate::backend::AsyncImage;
 use crate::dirent;
 use crate::filesystem::{BlockPlan, EroFSCore};
 use crate::types::*;
+use crate::xattr::{self, LongPrefix, Xattr};
 use crate::{Error, Result};
 
 /// The async entry point for reading EROFS filesystem images.
@@ -127,6 +128,76 @@ impl<I: AsyncImage> EroFS<I> {
                 Ok(buf)
             }
         }
+    }
+
+    /// Looks up the inode at `path`, if it exists.
+    pub async fn lookup(&self, path: impl AsRef<UnixPath>) -> Result<Option<Inode>> {
+        self.get_path_inode(path.as_ref()).await
+    }
+
+    async fn read_at(&self, offset: usize, len: usize) -> Result<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        self.image.read_exact_at(&mut buf, offset).await?;
+        Ok(buf)
+    }
+
+    /// Returns all extended attributes of `inode`: inline ones first, then
+    /// shared ones. See [`crate::EroFS::xattrs`].
+    pub async fn xattrs(&self, inode: &Inode) -> Result<Vec<Xattr>> {
+        let mut out = Vec::new();
+        let size = inode.xattr_size();
+        if size == 0 {
+            return Ok(out);
+        }
+        let body = self
+            .read_at(self.core.xattr_ibody_offset(inode), size)
+            .await?;
+        let (shared, start) = xattr::parse_ibody(&body)?;
+        let long_prefixes = self.long_xattr_prefixes().await?;
+
+        xattr::parse_inline_entries(&body[start..], &long_prefixes, &mut out)?;
+        for id in shared {
+            let off = self.core.shared_xattr_offset(id)?;
+            let head = self.read_at(off, xattr::XATTR_ENTRY_SIZE).await?;
+            let h = xattr::EntryHeader::parse(&head)?;
+            let data = self.read_at(off, h.body_len()).await?;
+            let (h, suffix, value) = xattr::parse_entry(&data)?;
+            if let Some(name) = xattr::full_name(h.name_index, suffix, &long_prefixes)? {
+                out.push(Xattr {
+                    name,
+                    value: value.to_vec(),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Returns the value of the xattr called `name`, or `None`.
+    pub async fn get_xattr(&self, inode: &Inode, name: &[u8]) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .xattrs(inode)
+            .await?
+            .into_iter()
+            .find(|x| x.name == name)
+            .map(|x| x.value))
+    }
+
+    /// Reads the long xattr name prefix table (empty if the image has none).
+    pub async fn long_xattr_prefixes(&self) -> Result<Vec<LongPrefix>> {
+        let Some(mut pos) = self.core.long_prefix_table_offset()? else {
+            return Ok(Vec::new());
+        };
+        let count = self.core.super_block.xattr_prefix_count as usize;
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            pos = xattr::align4(pos);
+            let len = (&self.read_at(pos, 2).await?[..]).get_u16_le() as usize;
+            pos += 2;
+            let payload = self.read_at(pos, len).await?;
+            out.push(xattr::parse_long_prefix(&payload)?);
+            pos += len;
+        }
+        Ok(out)
     }
 
     pub(crate) async fn get_path_inode(&self, path: &UnixPath) -> Result<Option<Inode>> {

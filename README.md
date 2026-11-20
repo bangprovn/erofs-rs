@@ -10,6 +10,7 @@ A pure Rust library for reading and building [EROFS](https://docs.kernel.org/fil
 - Zero-copy parsing via mmap (std) or byte slices (no_std)
 - Directory traversal and file reading
 - Multiple data layouts: flat plain, flat inline, chunk-based
+- Extended attributes (inline, shared, long prefixes), e.g. Android `security.selinux` labels
 
 ## Usage
 

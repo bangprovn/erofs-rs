@@ -9,6 +9,7 @@
 //! - **Zero-copy parsing**: Via mmap (std) or byte slices (no_std)
 //! - **Multiple backends**: Memory-mapped files (std) or raw byte slices (no_std)
 //! - **Multiple layouts**: Flat plain, flat inline, and chunk-based data layouts
+//! - **Extended attributes**: inline, shared and long-prefix xattrs (e.g. Android `security.selinux` labels)
 //!
 //! # Examples
 //!
@@ -59,7 +60,9 @@ pub mod backend;
 mod error;
 pub mod sync;
 pub mod types;
+pub mod xattr;
 
 pub use dirent::DirEntry;
 pub use error::*;
 pub use sync::{EroFS, ReadDir, WalkDir, WalkDirEntry};
+pub use xattr::Xattr;

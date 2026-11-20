@@ -1,4 +1,4 @@
-use alloc::{format, string::ToString, sync::Arc};
+use alloc::{format, string::ToString, sync::Arc, vec::Vec};
 use bytes::Buf;
 use typed_path::Component;
 use typed_path::{UnixComponent, UnixPath};
@@ -9,6 +9,7 @@ use crate::backend::Image;
 use crate::dirent;
 use crate::filesystem::{BlockPlan, EroFSCore};
 use crate::types::*;
+use crate::xattr::{self, LongPrefix, Xattr};
 use crate::{Error, Result};
 
 /// The main entry point for reading EROFS filesystem images.
@@ -183,6 +184,80 @@ impl<I: Image> EroFS<I> {
                     .ok_or_else(|| Error::OutOfBounds("failed to get inode data".to_string()))
             }
         }
+    }
+
+    /// Looks up the inode at `path`, if it exists.
+    pub fn lookup<P: AsRef<UnixPath>>(&self, path: P) -> Result<Option<Inode>> {
+        self.get_path_inode(path)
+    }
+
+    /// Returns all extended attributes of `inode`: inline ones first, then
+    /// shared ones (the order Linux `listxattr` uses).
+    pub fn xattrs(&self, inode: &Inode) -> Result<Vec<Xattr>> {
+        let mut out = Vec::new();
+        let size = inode.xattr_size();
+        if size == 0 {
+            return Ok(out);
+        }
+        let off = self.core.xattr_ibody_offset(inode);
+        let body = self
+            .image
+            .get(off..off + size)
+            .ok_or_else(|| Error::OutOfBounds("failed to read xattr ibody".to_string()))?;
+        let (shared, start) = xattr::parse_ibody(body)?;
+        let long_prefixes = self.long_xattr_prefixes()?;
+
+        xattr::parse_inline_entries(&body[start..], &long_prefixes, &mut out)?;
+        for id in shared {
+            let off = self.core.shared_xattr_offset(id)?;
+            let data = self
+                .image
+                .get(off..)
+                .ok_or_else(|| Error::OutOfBounds(format!("shared xattr {}", id)))?;
+            let (h, suffix, value) = xattr::parse_entry(data)?;
+            if let Some(name) = xattr::full_name(h.name_index, suffix, &long_prefixes)? {
+                out.push(Xattr {
+                    name,
+                    value: value.to_vec(),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Returns the value of the xattr called `name` (full name, e.g.
+    /// `b"security.selinux"`), or `None` if the inode does not have it.
+    pub fn get_xattr(&self, inode: &Inode, name: &[u8]) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .xattrs(inode)?
+            .into_iter()
+            .find(|x| x.name == name)
+            .map(|x| x.value))
+    }
+
+    /// Reads the long xattr name prefix table (empty if the image has none).
+    pub fn long_xattr_prefixes(&self) -> Result<Vec<LongPrefix>> {
+        let Some(mut pos) = self.core.long_prefix_table_offset()? else {
+            return Ok(Vec::new());
+        };
+        let count = self.core.super_block.xattr_prefix_count as usize;
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            pos = xattr::align4(pos);
+            let len = self
+                .image
+                .get(pos..pos + 2)
+                .ok_or_else(|| Error::OutOfBounds("xattr prefix length".to_string()))?
+                .get_u16_le() as usize;
+            pos += 2;
+            let payload = self
+                .image
+                .get(pos..pos + len)
+                .ok_or_else(|| Error::OutOfBounds("xattr prefix data".to_string()))?;
+            out.push(xattr::parse_long_prefix(payload)?);
+            pos += len;
+        }
+        Ok(out)
     }
 
     pub(crate) fn get_path_inode<P: AsRef<UnixPath>>(&self, path: P) -> Result<Option<Inode>> {
