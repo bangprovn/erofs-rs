@@ -24,8 +24,10 @@ pub enum Error {
     #[error("out of bounds: {0}")]
     OutOfBounds(String),
 
+    // Without `std`, `binrw::Error` does not implement `core::error::Error`,
+    // so it can't be a `#[source]`; `From` is implemented by hand below.
     #[error("binread error: {0}")]
-    BinRead(#[from] binrw::Error),
+    BinRead(#[cfg_attr(feature = "std", from)] binrw::Error),
 
     #[error("out of range {0} of {1}")]
     OutOfRange(usize, usize),
@@ -46,3 +48,10 @@ pub enum Error {
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
+
+#[cfg(not(feature = "std"))]
+impl From<binrw::Error> for Error {
+    fn from(e: binrw::Error) -> Self {
+        Self::BinRead(e)
+    }
+}

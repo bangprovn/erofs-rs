@@ -1,6 +1,7 @@
+use core::cmp;
 #[cfg(feature = "std")]
 use std::{
-    cmp, format,
+    format,
     io::{Read, Result},
 };
 
@@ -88,7 +89,7 @@ impl<'a, I: Image> Read for File<'a, I> {
         let block =
             block.map_err(|e| std::io::Error::other(format!("read block failed: {}", e)))?;
         #[cfg(not(feature = "std"))]
-        let block = block.map_err(|e| e)?;
+        let block = block?;
 
         if buf.len() >= block.len() {
             let n = block.len();
