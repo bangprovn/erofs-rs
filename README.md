@@ -118,10 +118,21 @@ erofs-cli inspect -i http://example.com/images/system.erofs cat /etc/os-release
 - [x] Chunk-based layout (without chunk indexes)
 - [x] Directory walk (`walk_dir`)
 - [x] Convert to tar archive
+- [x] Extended attributes (inline, shared, long prefixes)
+
+### Unsupported xattr cases
+
+Reading xattrs returns `Error::NotSupported` for these layouts:
+
+- **Long xattr prefixes stored in the packed inode**: images with long prefixes
+  where `EROFS_FEATURE_COMPAT_PLAIN_XATTR_PFX` is not set and `packed_nid != 0`
+  (erofs-utils/kernel read the prefix table from the packed inode's data).
+- **Shared xattrs in the metabox**: images with
+  `EROFS_FEATURE_COMPAT_SHARED_EA_IN_METABOX` set.
 
 ### TODO
 
-- [ ] Extended attributes
+- [ ] Xattrs: long prefixes in the packed inode, shared xattrs in the metabox
 - [ ] Compressed data (lz4, lzma, deflate)
 - [ ] Image building (`mkfs.erofs` equivalent)
 
